@@ -106,6 +106,36 @@ describe("matches", () => {
     expect(explorer3.matches("interface Baz { x: number; }")).toBe(false);
   });
 
+  it.each([
+    "(isLeapYear(year))",
+    "(((isLeapYear(year))))",
+    "isLeapYear((year))",
+  ])("ignores redundant parentheses in %s", (initializer) => {
+    const { result } = new Explorer(`const result = ${initializer};`).variables;
+    const { expected } = new Explorer("const expected = isLeapYear(year);")
+      .variables;
+
+    expect(result.value.matches("isLeapYear(year)")).toBe(true);
+    expect(expected.value.matches(initializer)).toBe(true);
+    expect(result.value.matches(expected.value)).toBe(true);
+  });
+
+  it.each([
+    ["(a + b) * c", "a + b * c"],
+    ["(obj?.value).name", "obj?.value.name"],
+    ['("use strict");', '"use strict";'],
+    ['("first"); "use strict";', '"first"; "use strict";'],
+  ])("preserves meaningful parentheses in %s", (source, expected) => {
+    expect(new Explorer(source).matches(expected)).toBe(false);
+    expect(new Explorer(expected).matches(source)).toBe(false);
+  });
+
+  it("ignores parentheses around a string after the directive prologue", () => {
+    expect(
+      new Explorer('setup(); ("example");').matches('setup(); "example";'),
+    ).toBe(true);
+  });
+
   it("ignores irrelevant whitespace", () => {
     const explorer1 = new Explorer("const a = 1;");
     expect(explorer1.matches("const a =  1;")).toBe(true);

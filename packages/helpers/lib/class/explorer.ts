@@ -66,6 +66,10 @@ import {
   isCallExpression,
   isNewExpression,
   isTypeNode,
+  isOptionalChain,
+  isParenthesizedExpression,
+  isStringLiteral,
+  isFunctionLike,
 } from "typescript";
 
 type TypeProp = {
@@ -289,6 +293,50 @@ function createTree(code: string, context: ParseContext): Node | null {
 const removeSemicolons = (nodes: readonly Node[]): Node[] =>
   nodes.filter(({ kind }) => kind !== SyntaxKind.SemicolonToken);
 
+function unwrapForComparison(node: Node): Node {
+  if (isSourceFile(node) && node.statements.length === 1) {
+    node = node.statements[0];
+  }
+
+  while (isParenthesizedExpression(node)) {
+    node = node.expression;
+  }
+
+  return node;
+}
+
+function isDirective(node: Node): boolean {
+  if (
+    !isStringLiteral(node) ||
+    !node.parent ||
+    !isExpressionStatement(node.parent)
+  ) {
+    return false;
+  }
+
+  const statement = node.parent;
+  const block = statement.parent;
+  if (
+    !block ||
+    (!isSourceFile(block) &&
+      !(isBlock(block) && block.parent && isFunctionLike(block.parent)))
+  ) {
+    return false;
+  }
+
+  for (const preceding of block.statements) {
+    if (preceding === statement) return true;
+    if (
+      !isExpressionStatement(preceding) ||
+      !isStringLiteral(preceding.expression)
+    ) {
+      return false;
+    }
+  }
+
+  return false;
+}
+
 const areNodesEquivalent = (
   node1: Node | null,
   node2: Node | null,
@@ -296,16 +344,21 @@ const areNodesEquivalent = (
   if (node1 === null && node2 === null) return true;
   if (node1 === null || node2 === null) return false;
 
-  // Unwrap single-statement SourceFiles to their statement for comparison
-  const unwrap = (node: Node): Node =>
-    isSourceFile(node) && node.statements.length === 1
-      ? node.statements[0]
-      : node;
+  // A parenthesized string does not participate in a directive prologue.
+  if (
+    isParenthesizedExpression(node1) !== isParenthesizedExpression(node2) &&
+    (isDirective(node1) || isDirective(node2))
+  ) {
+    return false;
+  }
 
-  node1 = unwrap(node1);
-  node2 = unwrap(node2);
+  node1 = unwrapForComparison(node1);
+  node2 = unwrapForComparison(node2);
 
   if (node1.kind !== node2.kind) return false;
+
+  // Grouping can end an optional chain even when the node kinds match.
+  if (isOptionalChain(node1) !== isOptionalChain(node2)) return false;
 
   const children1 = removeSemicolons(node1.getChildren());
   const children2 = removeSemicolons(node2.getChildren());
@@ -354,7 +407,7 @@ class Explorer {
     return this.tree ? this.tree.getText() : "no ast";
   }
 
-  // Compares the current tree with another tree, ignoring semicolons and whitespace
+  // Compares trees, ignoring semicolons, whitespace, and redundant parentheses.
   matches(other: string | Explorer): boolean {
     if (typeof other === "string") {
       // Handle empty case: both are empty
